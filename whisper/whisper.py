@@ -112,7 +112,6 @@ class WhisperInference:
         audio: Union[np.ndarray, str],
         max_len: int = 50,
         return_multiple: bool = False,
-        decoding: Optional[str] = "greedy",
         **generation_kwargs,
     )-> Union[Hypothesis, List[Hypothesis]]:
         """
@@ -128,8 +127,7 @@ class WhisperInference:
         - Transcription result.
         """
         if isinstance(audio, str):
-            audio, _ = load_wav(audio, tr_rate=16_000)
-        self.set_decoding(decoding)    
+            audio, _ = load_wav(audio, tr_rate=16_000)   
         # Modify decoding parameters during the function call
         if len(generation_kwargs):
             for k, v in generation_kwargs.items():
