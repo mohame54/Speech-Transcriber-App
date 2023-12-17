@@ -1,7 +1,6 @@
 from flask import Flask, request
 from flask_restful import Api, Resource
 import io
-import os
 import base64
 
 
@@ -12,12 +11,12 @@ from whisper import GreedyDecoding
 
 app = Flask(__name__)
 api = Api(app)
-CWR = os.getcwd()
+
 
 # Whisper default config
 config = WhisperConfig(
-    encoder_path=os.path.join(CWR, "whisper\\Pretrained\\encoder.int8.onnx"),
-    decoder_path=os.path.join(CWR, "whisper\\Pretrained\\decoder.int8.onnx"),
+    encoder_path="./whisper/Pretrained/encoder.int8.onnx",
+    decoder_path="./whisper/Pretrained/decoder.int8.onnx",
 )
 # Initialize the inference
 inf = WhisperInference(config)
