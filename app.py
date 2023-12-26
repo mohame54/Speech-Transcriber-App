@@ -5,12 +5,16 @@ import base64
 
 
 # local
-from whisper import WhisperConfig, WhisperInference, load_wav
+from whisper import WhisperConfig, WhisperInference, load_wav, download_models
 from whisper import GreedyDecoding
 
 
 app = Flask(__name__)
 api = Api(app)
+
+
+# Download the Pretrained models!
+download_models()
 
 
 # Whisper default config

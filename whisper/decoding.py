@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import onnxruntime
 
 
@@ -20,12 +20,17 @@ class Hypothesis:
 
     Attributes:
         tokens (List[int]): List of tokens in the hypothesis.
+        k_caches (np.ndarray): key caches for inference.
+        v_caches (np.ndarray): value caches for inference.
         logprob (float): Log probability of the hypothesis.
         is_done (bool): Indicates whether the hypothesis is complete.
     """
     tokens: List[int]
+    k_caches: Optional[np.ndarray] = None
+    v_caches: Optional[np.ndarray] = None
     logprob: float = 0.0
     is_done: bool = False
+ 
 
 
 class Inference:
@@ -60,10 +65,8 @@ class Inference:
             decoder_path, sess_options=options, providers=providers)
         self._mode = mode
         self.reset()
-
+       
     def reset(self):
-        self.k_caches = np.zeros((6, 1, 8, 1, 64)).astype(np.float32)
-        self.v_caches = np.zeros((6, 1, 8, 1, 64)).astype(np.float32)
         self.cross_k_cache = None
         self.cross_v_cache = None
 
@@ -72,10 +75,16 @@ class Inference:
         self.cross_k_cache = cross_k_cache
         self.cross_v_cache = cross_v_cache
 
-
     def get_inits(self):
         lang_id = ENGLISH_ID if self._mode == "English" else ARABIC_ID
-        hyp: Hypothesis = Hypothesis([50258, lang_id, 50359, 50363])
+        k_caches = np.zeros((6, 1, 8, 1, 64)).astype(np.float32)
+        v_caches = np.zeros((6, 1, 8, 1, 64)).astype(np.float32)
+        tokens =  [50258, lang_id, 50359, 50363]
+        hyp: Hypothesis = Hypothesis(
+            tokens,
+            k_caches,
+            v_caches,
+        )
         return hyp  
 
     def set_mode(self, mode: str):
@@ -85,7 +94,7 @@ class Inference:
         self,
         hyp: Hypothesis,
         initial: Optional[bool] = False,
-    ):
+    ) -> Tuple[np.ndarray]:
         """
         Generates logits for the given hypothesis using the encoder and decoder.
 
@@ -95,6 +104,8 @@ class Inference:
 
         Returns:
             np.ndarray: Logits for the hypothesis.
+            np.ndarray: keys caches for inference.
+            np.ndarray: values caches for inference.
         """
         if initial:
             tokens = np.array(hyp.tokens)
@@ -103,17 +114,17 @@ class Inference:
         tokens = np.expand_dims(tokens, axis=0).astype(np.int32)
         ort_inputs = {
             "tokens":tokens,
-            "self_k_caches":self.k_caches,
-            "self_v_caches":self.v_caches,
+            "self_k_caches":hyp.k_caches,
+            "self_v_caches":hyp.v_caches,
             "cross_k_caches":self.cross_k_cache,
             "cross_v_caches":self.cross_v_cache,
         }               
         outs = self.decoder.run(None, ort_inputs)  
         # update the internal variables
         # update the k an v states 
-        self.k_caches = outs[1]  
-        self.v_caches = outs[2]
-        return (outs[0][:,-1:,:]).squeeze()         
+        k_caches = outs[1]  
+        v_caches = outs[2]
+        return (outs[0][:, -1: ,:]).squeeze(), k_caches, v_caches        
 
 
 class Decoding:
@@ -287,29 +298,19 @@ class GreedyDecoding(Decoding):
         hyp: Hypothesis = self.inference.get_inits()
         for i in range(1, max_len):
             is_initial = i == 1
-            logits = self.inference(
-                hyp,
-                initial=is_initial,
-            )
+            # Retrive the current logits and k_caches and v_caches
+            logits, k_cahces, v_caches = self.inference(hyp, initial=is_initial)
+            # Update the Hypothesis k_cahces, v_caches 
+            hyp.k_caches = k_cahces
+            hyp.v_caches = v_caches
             hyp = self.update(logits, hyp)
             if hyp.is_done:
                 break
+        # Release keys and values caches.    
+        hyp.k_caches = None
+        hyp.v_caches = None    
         return hyp
 
-    def finalize(self, hyps: List[Hypothesis]):
-        """
-        Finalizes the decoding process by appending end-of-sequence tokens to hypotheses.
-
-        Parameters:
-            hyps: List of hypotheses.
-
-        Returns:
-            List[Hypothesis]: Finalized hypotheses.
-        """
-        for i in range(len(hyps)):
-            if hyps[i].tokens[-1] != self.eos_id:
-                hyps[i].tokens.append(self.eos_id)
-        return hyps
 
 class BeamSearchDecoding(Decoding):
     """
@@ -371,13 +372,14 @@ class BeamSearchDecoding(Decoding):
                 continue
 
             # Get logits for the current hypothesis
-            logits = self.inference(hyp, initial=initial)
+            logits, k_caches, v_caches = self.inference(hyp, initial=initial)
             # Apply greedy decode or top p sampling to get the top beam_width candidates
             if self.temperature > 0.0 and self.temperature != 1.0:
                 probs = softmax(logits / self.temperature)
                 top_indices = sample_top_p(probs, self.top_p, size=self.beam_size)
             else:
-                top_indices = np.argsort(logits)[-self.beam_size:][::-1]
+                top_indices = np.argsort(logits)[::-1][:self.beam_size]  
+            # Apply log softmax normalize then calculate     
             logits = logits - logits.max(axis=-1)    
             sum_logits = np.log(np.sum(np.exp(logits)))
             for idx in top_indices:
@@ -390,6 +392,8 @@ class BeamSearchDecoding(Decoding):
                 new_beam.append(
                     Hypothesis(
                         tokens=new_tokens,
+                        k_caches=k_caches,
+                        v_caches=v_caches,
                         logprob=new_logprob,
                         is_done=new_is_done
                     )
@@ -425,9 +429,27 @@ class BeamSearchDecoding(Decoding):
                 beam,
                 initial=is_initial
             )
-            if all(h.is_done for h in beam):
+            if any(h.is_done for h in beam):
                 break
+        beam = self.finalize(beam)
         if not return_multiple:
             best_idx = self.length_penalty.rank(beam)
             beam = beam[best_idx]
         return beam
+    
+    def finalize(self, hyps: List[Hypothesis]):
+        """
+        Finalizes the decoding process by appending end-of-sequence tokens to hypotheses.
+
+        Parameters:
+            hyps: List of hypotheses.
+
+        Returns:
+            List[Hypothesis]: Finalized hypotheses.
+        """
+        for i in range(len(hyps)):
+            hyps[i].k_caches = None
+            hyps[i].v_caches = None
+            if hyps[i].tokens[-1] != self.eos_id:
+                hyps[i].tokens.append(self.eos_id)
+        return hyps

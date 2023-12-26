@@ -4,6 +4,8 @@ import soxr
 import soundfile as sf
 import numpy as np
 from dataclasses import dataclass
+import wget
+import os
 
 
 # LOCAL
@@ -25,7 +27,7 @@ class WhisperConfig:
     - eos_id: End-of-sequence token ID, default is 50257.
     - temperature: Temperature for decoding, default is 1.0.
     - top_p: Top-p sampling parameter, default is 0.98.
-    - length_penalty: Length penalty for beam search decoding, default is 1.0.
+    - length_penalty: Length penalty for beam search decoding, default is 2.0.
     """
     encoder_path: str
     decoder_path: str
@@ -36,7 +38,7 @@ class WhisperConfig:
     eos_id: int = 50257
     temperature: float = 1.0
     top_p: float = 0.98
-    length_penalty: float = 1.0
+    length_penalty: float = 2.0
 
 
 class WhisperInference:
@@ -91,7 +93,7 @@ class WhisperInference:
                 self.config.beam_size,
                 self.config.length_penalty,
                 self.config.top_p,
-                self.config.length_penalty
+                self.config.temperature,
             )    
 
     def _extract_feats(self, audio)-> np.ndarray:
@@ -112,6 +114,7 @@ class WhisperInference:
         audio: Union[np.ndarray, str],
         max_len: int = 50,
         return_multiple: bool = False,
+        return_hyps: bool = False,
         **generation_kwargs,
     )-> Union[Hypothesis, List[Hypothesis]]:
         """
@@ -121,6 +124,7 @@ class WhisperInference:
         - audio: Input audio as a numpy array or file path.
         - max_len: Maximum length of the transcription.
         - return_multiple: Whether to return multiple transcriptions.
+        - return_hyps: Whether to return the multiple hypothesis for debugging purposes.
         - **generation_kwargs: Additional decoding parameters.
 
         Returns:
@@ -134,22 +138,26 @@ class WhisperInference:
                 if hasattr(self.decoding, k):
                     setattr(self.decoding, k, v)
         feats = self._extract_feats(audio)
-        return self.decoding(feats, max_len, return_multiple)
+        hyps = self.decoding(feats, max_len, return_multiple)
+        if return_hyps:
+            return hyps
+        skip_special_tokens = generation_kwargs.get("skip_special_tokens", True)
+        return self.decode(hyps, skip_special_tokens)
 
     def decode(
         self,
-        hyps: Union[List[Hypothesis], List[int]],
+        hyps: Union[List[Hypothesis], Hypothesis],
         skip_special_tokens: Optional[bool] = True,
-    ) -> str:
+    ) -> List[str]:
         """
         Decodes the given hypothesis or list of token IDs.
 
         Args:
-        - hyps: Hypothesis or list of token IDs.
+        - hyps: List of Hypothesis or Hypothesis.
         - skip_special_tokens: Whether to skip special tokens during decoding.
 
         Returns:
-        - Decoded transcription.
+        - List of decoded transcriptions.
         """
         if not isinstance(hyps, list):
             hyps = [hyps]
@@ -191,3 +199,15 @@ def load_wav(file_path, tr_rate=16_000) -> Tuple[np.ndarray, int]:
             quality="soxr_hq",
         )
     return audio_array, tr_rate
+
+
+def download_models():
+    # If models already existed don't do
+    files = os.listdir("./Pretrained")
+    if not "encoder.int8.onnx" in files:
+        print("Downloading the Encoder!") 
+        wget.download("https://drive.google.com/u/0/uc?id=1---yRGFuksLXfxuW9KUTBdKEa7vV68Yv&export=download","./Pretrained/encoder.int8.onnx")
+        
+    if not "decoder.int8.onnx" in files:
+        print("Downloading the Decoder!") 
+        wget.download('https://drive.google.com/u/0/uc?id=1-0chhKypgGvRb1-aLy6Kp7RIwaThNCbm&export=download&confirm=t&uuid=4e545755-2ec0-401b-af89-112a6b765ba4&at=AB6BwCA7FFgl0i0sZs5rUCAWCRPT:1702764844470','./Pretrained/decoder.int8.onnx')

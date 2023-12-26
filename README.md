@@ -19,7 +19,7 @@ pip install -r requirements.txt
 ```
 ## Run the API:
 
-Execute python app.py to start the Flask server.
+Execute python app.py to start the Flask server and download `(if needed)` the optimized models.
 ```bash
 python app.py
 ```
